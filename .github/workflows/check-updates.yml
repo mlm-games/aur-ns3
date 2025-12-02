@@ -11,11 +11,6 @@ on:
         required: false
         default: false
         type: boolean
-      increment_pkgrel:
-        description: 'Increment pkgrel (for same version updates)'
-        required: false
-        default: false
-        type: boolean
 
 jobs:
   check-and-update:
@@ -99,13 +94,20 @@ jobs:
       id: pkgrel
       run: |
         set -euo pipefail
-
-        if [[ "${{ steps.current_pkgrel.outputs.same_version }}" == "true" ]] \
-           && [[ "${{ inputs.increment_pkgrel }}" == "true" ]]; then
+  
+        if [[ "${{ steps.current_pkgrel.outputs.same_version }}" == "true" ]]; then
           CURRENT=${{ steps.current_pkgrel.outputs.current_pkgrel }}
-          NEW_PKGREL=$((CURRENT + 1))
+  
+          # Safety: if CURRENT isn't a plain integer, reset to 1
+          if [[ "$CURRENT" =~ ^[0-9]+$ ]]; then
+            NEW_PKGREL=$((CURRENT + 1))
+          else
+            NEW_PKGREL=1
+          fi
+  
           echo "pkgrel=$NEW_PKGREL" >> "$GITHUB_OUTPUT"
         else
+          # New upstream version: start at pkgrel=1
           echo "pkgrel=1" >> "$GITHUB_OUTPUT"
         fi
 
