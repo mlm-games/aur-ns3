@@ -114,6 +114,8 @@ jobs:
       run: |
         set -euo pipefail
 
+        mkdir -p aur-package
+
         cat > aur-package/PKGBUILD << 'EOF_PKG'
         # Maintainer: MLM-stuff gfxoxinzh@mozmail.com
         
