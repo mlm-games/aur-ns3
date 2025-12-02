@@ -76,7 +76,7 @@ jobs:
       run: |
         set -euo pipefail
 
-        PKGBUILD=$(curl -s "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=ns3" || true)
+        PKGBUILD=$(curl -s "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=ns3-simple" || true)
 
         CURRENT_PKGREL=$(echo "$PKGBUILD" | awk -F= '/^pkgrel=/{print $2; exit}' || echo "1")
         echo "current_pkgrel=$CURRENT_PKGREL" >> "$GITHUB_OUTPUT"
