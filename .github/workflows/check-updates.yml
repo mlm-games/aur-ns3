@@ -46,7 +46,7 @@ jobs:
         echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
 
         # Get current version from AUR ns3 PKGBUILD
-        CURRENT_VERSION=$(curl -fsSL "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=ns3" \
+        CURRENT_VERSION=$(curl -fsSL "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=ns3-simple" \
           | awk -F= '/^pkgver=/{print $2; exit}' || echo "none")
 
         echo "Current version in AUR: $CURRENT_VERSION"
