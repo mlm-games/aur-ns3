@@ -1,9 +1,9 @@
-name: Check and Update Godot Preview
+name: Check and Update ns3
 
 on:
   schedule:
-    # Run every 20 days at 00:00 UTC
-    - cron: '0 0 */2 * *'
+    # Run every 17 days at 00:00 UTC
+    - cron: '0 0 */17 * *'
   workflow_dispatch:
     inputs:
       force_update:
@@ -20,157 +20,380 @@ on:
 jobs:
   check-and-update:
     runs-on: ubuntu-latest
-    
+
     steps:
     - uses: actions/checkout@v4
-    
-    - name: Check for latest Godot preview version
+
+    - name: Check for latest ns3 version
       id: check
       run: |
-        # Get latest preview/beta release from Godot builds
-        RELEASES_JSON=$(curl -s https://api.github.com/repos/godotengine/godot-builds/releases)
-        if echo "$RELEASES_JSON" | jq -e 'type == "array"' >/dev/null; then
-          LATEST_RELEASE=$(echo "$RELEASES_JSON" | jq -r '[.[] | select(.tag_name | test("^4\\." + ".*(dev|beta|rc)"))] | first | .tag_name')
-        else
-          echo "Error: Unexpected response from GitHub API"
+        set -euo pipefail
+
+        # Find latest ns-allinone-X.Y from the installation guide
+        HTML=$(curl -fsSL "https://www.nsnam.org/docs/installation/singlehtml/index.html")
+
+        LATEST_VERSION=$(echo "$HTML" \
+          | grep -oP 'ns-allinone-\K[0-9]+\.[0-9]+' \
+          | sort -Vu \
+          | tail -n1 || true)
+
+        if [[ -z "$LATEST_VERSION" ]]; then
+          echo "Error: could not determine latest ns3 version" >&2
           exit 1
         fi
-        
-        echo "Latest version: $LATEST_RELEASE"
-        echo "latest_version_raw=$LATEST_RELEASE" >> $GITHUB_OUTPUT
-        
-        # Convert version format for AUR (replace dots in dev/beta/rc with underscores)
-        # e.g., 4.5-beta3 -> 4.5beta4
-        AUR_VERSION=$(echo "$LATEST_RELEASE" | sed 's/\.dev/dev/g' | sed 's/\.beta/beta/g' | sed 's/\.rc/rc/g' | sed 's/-//g')
-        echo "latest_version=$AUR_VERSION" >> $GITHUB_OUTPUT
-        
-        # Get current version from AUR PKGBUILD
-        CURRENT_VERSION=$(curl -s "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=godot-preview-bin" | grep "^pkgver=" | cut -d= -f2 || echo "none")
+
+        echo "Latest upstream ns-allinone version: $LATEST_VERSION"
+        echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
+
+        # Get current version from AUR ns3 PKGBUILD
+        CURRENT_VERSION=$(curl -fsSL "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=ns3" \
+          | awk -F= '/^pkgver=/{print $2; exit}' || echo "none")
+
         echo "Current version in AUR: $CURRENT_VERSION"
-        echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-        
-        if [[ "$AUR_VERSION" != "$CURRENT_VERSION" ]] || [[ "${{ inputs.force_update }}" == "true" ]]; then
-          echo "update_needed=true" >> $GITHUB_OUTPUT
+        echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+
+        if [[ "$LATEST_VERSION" != "$CURRENT_VERSION" ]] || [[ "${{ inputs.force_update }}" == "true" ]]; then
+          echo "update_needed=true" >> "$GITHUB_OUTPUT"
         else
-          echo "update_needed=false" >> $GITHUB_OUTPUT
+          echo "update_needed=false" >> "$GITHUB_OUTPUT"
         fi
-    
-    - name: Download and calculate checksum
+
+    - name: Download ns-allinone tarball and calculate checksum
       if: steps.check.outputs.update_needed == 'true'
       id: download
       run: |
-        VERSION="${{ steps.check.outputs.latest_version_raw }}"
-        URL="https://github.com/godotengine/godot-builds/releases/download/${VERSION}/Godot_v${VERSION}_linux.x86_64.zip"
-        
-        # Download and calculate checksum
-        wget -O godot.zip "$URL"
-        CHECKSUM=$(sha256sum godot.zip | cut -d ' ' -f 1)
-        echo "sha256sum=$CHECKSUM" >> $GITHUB_OUTPUT
-        
-        # Get file size to verify download
-        SIZE=$(stat -c%s godot.zip)
-        echo "Download size: $SIZE bytes"
-        rm godot.zip
-    
+        set -euo pipefail
+
+        VERSION="${{ steps.check.outputs.latest_version }}"
+        URL="https://www.nsnam.org/releases/ns-allinone-${VERSION}.tar.bz2"
+
+        echo "Downloading: $URL"
+        curl -fSL "$URL" -o ns-allinone.tar.bz2
+
+        CHECKSUM=$(sha256sum ns-allinone.tar.bz2 | cut -d ' ' -f1)
+        echo "sha256sum=$CHECKSUM" >> "$GITHUB_OUTPUT"
+
+        rm ns-allinone.tar.bz2
+
     - name: Get current pkgrel from AUR
       if: steps.check.outputs.update_needed == 'true'
       id: current_pkgrel
       run: |
-        # Try to get current PKGBUILD from AUR
-        CURRENT_PKGREL=$(curl -s "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=godot-preview-bin" | grep "^pkgrel=" | cut -d= -f2 || echo "0")
-        echo "current_pkgrel=$CURRENT_PKGREL" >> $GITHUB_OUTPUT
-        
-        # Check if the version in AUR matches what we're updating to
-        AUR_VERSION=$(curl -s "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=godot-preview-bin" | grep "^pkgver=" | cut -d= -f2 || echo "none")
+        set -euo pipefail
+
+        PKGBUILD=$(curl -s "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=ns3" || true)
+
+        CURRENT_PKGREL=$(echo "$PKGBUILD" | awk -F= '/^pkgrel=/{print $2; exit}' || echo "1")
+        echo "current_pkgrel=$CURRENT_PKGREL" >> "$GITHUB_OUTPUT"
+
+        AUR_VERSION=$(echo "$PKGBUILD" | awk -F= '/^pkgver=/{print $2; exit}' || echo "none")
         if [[ "$AUR_VERSION" == "${{ steps.check.outputs.latest_version }}" ]]; then
-          echo "same_version=true" >> $GITHUB_OUTPUT
+          echo "same_version=true" >> "$GITHUB_OUTPUT"
         else
-          echo "same_version=false" >> $GITHUB_OUTPUT
+          echo "same_version=false" >> "$GITHUB_OUTPUT"
         fi
       continue-on-error: true
-    
+
     - name: Determine pkgrel
       if: steps.check.outputs.update_needed == 'true'
       id: pkgrel
       run: |
-        if [[ "${{ steps.current_pkgrel.outputs.same_version }}" == "true" ]] && [[ "${{ inputs.increment_pkgrel }}" == "true" ]]; then
+        set -euo pipefail
+
+        if [[ "${{ steps.current_pkgrel.outputs.same_version }}" == "true" ]] \
+           && [[ "${{ inputs.increment_pkgrel }}" == "true" ]]; then
           CURRENT=${{ steps.current_pkgrel.outputs.current_pkgrel }}
           NEW_PKGREL=$((CURRENT + 1))
-          echo "pkgrel=$NEW_PKGREL" >> $GITHUB_OUTPUT
+          echo "pkgrel=$NEW_PKGREL" >> "$GITHUB_OUTPUT"
         else
-          echo "pkgrel=1" >> $GITHUB_OUTPUT
+          echo "pkgrel=1" >> "$GITHUB_OUTPUT"
         fi
-    
+
+    - name: Prepare patch files
+      if: steps.check.outputs.update_needed == 'true'
+      run: |
+        set -euo pipefail
+        mkdir -p aur-package
+
+        # Reuse the existing ns3-scratch-nested-subdir.patch from current AUR
+        curl -fsSL "https://aur.archlinux.org/cgit/aur.git/plain/ns3-scratch-nested-subdir.patch?h=ns3" \
+          -o aur-package/ns3-scratch-nested-subdir.patch
+
+        # Create ns3-openflow-importlib.patch locally (fixes openflow waf for modern Python)
+        cat > aur-package/ns3-openflow-importlib.patch << 'EOF_PATCH'
+          diff --git a/waf b/waf
+          index 3d0f216..2b03280 100755
+          --- a/waf
+          +++ b/waf
+          @@ -30,7 +30,7 @@ IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+           POSSIBILITY OF SUCH DAMAGE.
+           """
+           
+          -import os, sys, inspect
+          +import os, sys, inspect, fileinput
+           
+           VERSION="2.0.18"
+           REVISION="ff4ae9f5cc05353d3dc3aeff8854ae69"
+          @@ -157,6 +157,14 @@ def find_lib():
+           
+                  #unpack
+                  unpack_wafdir(dir, src)
+          +
+          +       for line in fileinput.input(dir + "/waflib/Context.py", inplace=True):
+          +               if line.startswith('import os,re,imp,sys'):
+          +                       print('import os,re,sys\nimport types')
+          +               elif line.startswith('\tmodule=imp.new_module(WSCRIPT_FILE)'):
+          +                       print('\tmodule=types.ModuleType(\'WSCRIPT_FILE\')')
+          +               else:
+          +                       print(line, end='')
+                  return dir
+           
+            wafdir = find_lib()
+          EOF_PATCH
+
     - name: Create PKGBUILD
       if: steps.check.outputs.update_needed == 'true'
       run: |
-        mkdir -p aur-package
-        cat > aur-package/PKGBUILD << 'EOF'
-        # Maintainer: MLM-stuff gfxoxinzh@mozmail.com
-        pkgname=godot-preview-bin
-        pkgver=${{ steps.check.outputs.latest_version }}
-        _realver=${{ steps.check.outputs.latest_version_raw }}
-        pkgrel=${{ steps.pkgrel.outputs.pkgrel }}
-        pkgdesc="Godot Engine Preview/Beta - Prebuilt binary from official builds"
-        arch=('x86_64')
-        url="https://godotengine.org"
-        license=('MIT')
-        depends=('glibc' 'libglvnd' 'libxcursor' 'libxi' 'libxinerama' 'libxrandr' 'hicolor-icon-theme' 'libxrender' 'libx11' 'libxext')
-        optdepends=('pipewire-alsa: Audio support'
-                    'pipewire-pulse: Audio support')
-        provides=('godot-preview')
-        conflicts=('godot-preview')
-        source=("https://github.com/godotengine/godot-builds/releases/download/${_realver}/Godot_v${_realver}_linux.x86_64.zip"
-                "godot-preview.desktop"
-                "godot-preview.svg")
-        sha256sums=('${{ steps.download.outputs.sha256sum }}'
-                    'SKIP'
-                    'SKIP')
-        
-        package() {
-            # Extract binary
-            install -dm755 "$pkgdir/opt/godot-preview"
-            install -Dm755 "Godot_v${_realver}_linux.x86_64" "$pkgdir/opt/godot-preview/godot-preview"
-            
-            # Create symlink
-            install -dm755 "$pkgdir/usr/bin"
-            ln -s /opt/godot-preview/godot-preview "$pkgdir/usr/bin/godot-preview"
-            
-            # Install desktop entry
-            install -Dm644 "$srcdir/godot-preview.desktop" "$pkgdir/usr/share/applications/godot-preview.desktop"
-            
-            # Install icon
-            install -Dm644 "$srcdir/godot-preview.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/godot-preview.svg"
-        }
-        EOF
-        
-        # Create desktop file
-        cat > aur-package/godot-preview.desktop << 'EOF'
-        [Desktop Entry]
-        Name=Godot Preview
-        Comment=Multi-platform 2D and 3D game engine (Preview/Beta)
-        Exec=/usr/bin/godot-preview %f
-        Icon=godot-preview
-        Terminal=false
-        Type=Application
-        Categories=Development;Game;IDE;
-        MimeType=application/x-godot-project;
-        StartupWMClass=Godot
-        EOF
-        
-        # Download Godot icon
-        wget -O aur-package/godot-preview.svg "https://raw.githubusercontent.com/godotengine/godot/master/icon.svg"
-    
+        set -euo pipefail
+
+        cat > aur-package/PKGBUILD << 'EOF_PKG'
+          # Maintainer: MLM-stuff gfxoxinzh@mozmail.com
+          
+          pkgname=ns3
+          pkgver=${{ steps.check.outputs.latest_version }}
+          pkgrel=${{ steps.pkgrel.outputs.pkgrel }}
+          pkgdesc='Discrete-event network simulator for Internet systems'
+          arch=('x86_64')
+          url='https://www.nsnam.org/'
+          license=('GPL-2.0-only')
+          options=('!lto')
+          
+          depends=(
+            'python'              # ns3 wrapper & bindings
+            'python-cppyy'        # cppyy / CPyCppyy / backend from extra
+            'dpdk'
+            'sqlite'              # statistics / DB support
+            'qt5-base'            # netanim
+            'openmpi'             # MPI
+            'eigen'
+            'gsl'
+            'libxml2'
+            'gtk3'
+            'boost-libs'
+            'glibc'
+            'libpcap'
+            # VM / tap bridge
+            'lxc' 'vtun' 'ebtables' 'bridge-utils'
+            # pyviz
+            'goocanvas' 'python-gobject' 'python-cairo' 'python-pygraphviz'
+            'ipython'
+          )
+          
+          makedepends=(
+            'cmake'
+            'boost'
+            'git'
+            'mercurial'
+            # docs
+            'doxygen' 'graphviz' 'imagemagick' 'python-sphinx' 'texlive-bin'
+          )
+          
+          optdepends=(
+            'uncrustify: utils/check-style.py style checks'
+            'dia: documentation diagrams'
+          )
+          
+          provides=('ns3')
+          conflicts=('ns3-git' 'ns3-hg')
+          
+          source=(
+            "https://www.nsnam.org/releases/ns-allinone-${pkgver}.tar.bz2"
+            'ns3-scratch-nested-subdir.patch'
+            'ns3-openflow-importlib.patch'
+            "brite.tar.gz::https://code.nsnam.org/BRITE/archive/tip.tar.gz"
+            "openflow.tar.gz::https://code.nsnam.org/openflow/archive/tip.tar.gz"
+            "click-git::git+https://github.com/kohler/click"
+          )
+          
+          sha256sums=(
+            '${{ steps.download.outputs.sha256sum }}'
+            '20daecc727ac793732be25d5a2977f72c8edaa5c01720d5999069936cfe9d292' # ns3-scratch-nested-subdir.patch
+            '8cad25914a9365fff25e1c47af3062ebc15d3bf5246e73f02090a6d21b661ef2' # ns3-openflow-importlib.patch
+            'SKIP' # brite tip
+            'SKIP' # openflow tip
+            'SKIP' # click-git
+          )
+          
+          prepare() {
+            cd "${srcdir}/ns-allinone-${pkgver}/ns-${pkgver}"
+          
+            # DPDK API compatibility (harmless if upstream already fixed)
+            sed -i "src/fd-net-device/model/dpdk-net-device.cc" \
+              -e 's/CALL_MASTER/CALL_MAIN/' \
+              -e 's/ETH_LINK_DOWN/RTE_ETH_LINK_DOWN/' \
+              -e 's/ETH_MQ_TX_NONE/RTE_ETH_MQ_TX_NONE/' \
+              -e 's/DEV_TX_OFFLOAD_MBUF_FAST_FREE/RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE/' \
+              -e '/split_hdr_size/d'
+          
+            # Allow nested scratch/ subdirectories
+            patch -Np1 -i "${srcdir}/ns3-scratch-nested-subdir.patch"
+          
+            # OpenFlow waf compatibility with modern Python
+            local openflow_dir
+            openflow_dir="$(realpath "${srcdir}"/openflow-*)"
+            cd "${openflow_dir}"
+            patch -Np1 -i "${srcdir}/ns3-openflow-importlib.patch"
+          
+            # Click: workaround for linux_true macro issues
+            cd "${srcdir}/click-git"
+            sed -i '/linux_true/d' include/click/cxxprotect.h
+          }
+          
+          build() {
+            # click's tools call 'gzcat'; Arch only ships 'zcat'
+            local build_bin_dir="${srcdir}/.bin"
+            mkdir -p "${build_bin_dir}"
+            ln -sf /usr/bin/zcat "${build_bin_dir}/gzcat"
+            export PATH="${PATH}:${build_bin_dir}"
+          
+            # BRITE
+            local brite_dir
+            brite_dir="$(realpath "${srcdir}"/BRITE-*)"
+            cd "${brite_dir}"
+            make
+          
+            # Click
+            cd "${srcdir}/click-git"
+            ./configure --prefix="${srcdir}/click-git/install" \
+              --disable-linuxmodule \
+              --enable-nsclick \
+              --enable-wifi
+            make
+            make install
+          
+            # OpenFlow
+            local openflow_dir
+            openflow_dir="$(realpath "${srcdir}"/openflow-*)"
+            cd "${openflow_dir}"
+            ./waf configure --prefix=/usr
+            ./waf build
+          
+            # NetAnim
+            cd "${srcdir}/ns-allinone-${pkgver}/netanim"-*
+            qmake NetAnim.pro
+            make
+          
+            # ns-3 core + Python bindings
+            cd "${srcdir}/ns-allinone-${pkgver}/ns-${pkgver}"
+          
+            local pyver
+            pyver="$(
+              python - << 'EOF'
+          import sys
+          print(f"{sys.version_info[0]}.{sys.version_info[1]}")
+          EOF
+            )"
+            local py_site="lib/python${pyver}/site-packages"
+          
+            ./ns3 configure \
+              --build-profile=default \
+              --enable-build-version \
+              --enable-dpdk \
+              --enable-eigen \
+              --enable-examples \
+              --enable-gsl \
+              --enable-gtk \
+              --enable-logs \
+              --enable-monolib \
+              --enable-mpi \
+              --enable-python-bindings \
+              --enable-tests \
+              --with-brite="${brite_dir}" \
+              --with-click="${srcdir}/click-git/install" \
+              --with-openflow="${openflow_dir}" \
+              --prefix=/usr \
+              -- \
+              -DNS3_BINDINGS_INSTALL_DIR="/usr/${py_site}"
+          
+            ./ns3 build
+          
+            # Clean absolute $srcdir from pkg-config files in build tree
+            find -L . -name '*.pc' -exec \
+              sed -e "s,[^[:blank:]]\+${srcdir}[^[:blank:]]\+,,g" -i {} +
+          }
+          
+          check() {
+            cd "${srcdir}/ns-allinone-${pkgver}/ns-${pkgver}"
+            ./ns3 run "hello-simulator" || echo "ns3 hello-simulator failed (ignored)"
+          }
+          
+          package() {
+            # BRITE
+            local brite_dir
+            brite_dir="$(realpath "${srcdir}"/BRITE-*)"
+            cd "${brite_dir}"
+            make PREFIX="${pkgdir}/usr" install
+          
+            # Click
+            cd "${srcdir}/click-git"
+            cp -r install/* "${pkgdir}/usr"
+          
+            # OpenFlow
+            local openflow_dir
+            openflow_dir="$(realpath "${srcdir}"/openflow-*)"
+            cd "${openflow_dir}"
+            ./waf install --destdir="${pkgdir}"
+            # Avoid header clash with openvswitch
+            rm -rf "${pkgdir}/usr/include/openflow"
+          
+            # NetAnim
+            cd "${srcdir}/ns-allinone-${pkgver}/netanim"-*
+            install -Dm755 NetAnim "${pkgdir}/usr/bin/netanim"
+          
+            # ns-3 core
+            cd "${srcdir}/ns-allinone-${pkgver}/ns-${pkgver}"
+            DESTDIR="${pkgdir}" ./ns3 install
+          
+            # Install Python 'ns' package into site-packages
+            local pyver py_site
+            pyver="$(
+              python - << 'EOF'
+          import sys
+          print(f"{sys.version_info[0]}.{sys.version_info[1]}")
+          EOF
+            )"
+            py_site="${pkgdir}/usr/lib/python${pyver}/site-packages"
+            install -d "${py_site}/ns"
+            install -m644 bindings/python/ns__init__.py "${py_site}/ns/__init__.py"
+          
+            # Strip any hardcoded $srcdir references from installed files
+            mapfile -t files < <(grep -R --binary-files=without-match -l "${srcdir}" "${pkgdir}" || true)
+            if ((${#files[@]})); then
+              sed -i \
+                -e "s,${srcdir}/$(basename "${brite_dir}"),/usr/lib,g" \
+                -e "s,${srcdir}/click-git/install,/usr,g" \
+                -e "s,${srcdir}/click-git,,g" \
+                -e "s,${srcdir}/$(basename "${openflow_dir}")/build,/usr/lib,g" \
+                -e "s,${srcdir}/$(basename "${openflow_dir}"),/usr,g" \
+                -e "s,;${srcdir},,g" \
+                -e "s,-I${srcdir},,g" \
+                "${files[@]}"
+            fi
+          }
+          
+          # vim: set ts=2 sw=2 et:
+          EOF_PKG
+
     - name: Publish to AUR
       if: steps.check.outputs.update_needed == 'true'
       uses: mlm-games/aur-deploy-action@master
       with:
-        pkgname: godot-preview-bin
+        pkgname: ns3
         pkgbuild: aur-package/PKGBUILD
         assets: |
-          aur-package/godot-preview.desktop
-          aur-package/godot-preview.svg
+          aur-package/ns3-scratch-nested-subdir.patch
+          aur-package/ns3-openflow-importlib.patch
         commit_username: MLM-stuff
         commit_email: gfxoxinzh@mozmail.com
         ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-        commit_message: "Update to version ${{ steps.check.outputs.latest_version }}-${{ steps.pkgrel.outputs.pkgrel }}"
+        commit_message: "ns3: update to ${{ steps.check.outputs.latest_version }}-${{ steps.pkgrel.outputs.pkgrel }}"
