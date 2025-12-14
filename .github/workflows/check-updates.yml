@@ -40,9 +40,17 @@ jobs:
         echo "Latest upstream ns-allinone version: $LATEST_VERSION"
         echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
 
-        # Get current version from AUR ns3 PKGBUILD
-        CURRENT_VERSION=$(curl -fsSL "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=ns3-simple" \
-          | awk -F= '/^pkgver=/{print $2; exit}' || echo "none")
+        # Get current version from AUR ns3-simple PKGBUILD
+        TMPDIR=$(mktemp -d)
+        CURRENT_VERSION="none"
+        if git clone --depth 1 "https://aur.archlinux.org/ns3-simple.git" "$TMPDIR"; then
+          if [[ -f "$TMPDIR/PKGBUILD" ]]; then
+            CURRENT_VERSION=$(awk -F= '/^pkgver=/{gsub(/["'"'"']/, "", $2); gsub(/^[ \t]+/, "", $2); print $2; exit}' "$TMPDIR/PKGBUILD")
+          fi
+        else
+          echo "Warning: failed to clone AUR repo for ns3-simple; assuming no current version"
+        fi
+        rm -rf "$TMPDIR"
 
         echo "Current version in AUR: $CURRENT_VERSION"
         echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
@@ -70,47 +78,6 @@ jobs:
 
         rm ns-allinone.tar.bz2
 
-    - name: Get current pkgrel from AUR
-      if: steps.check.outputs.update_needed == 'true'
-      id: current_pkgrel
-      run: |
-        set -euo pipefail
-
-        PKGBUILD=$(curl -s "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=ns3-simple" || true)
-
-        CURRENT_PKGREL=$(echo "$PKGBUILD" | awk -F= '/^pkgrel=/{print $2; exit}' || echo "1")
-        echo "current_pkgrel=$CURRENT_PKGREL" >> "$GITHUB_OUTPUT"
-
-        AUR_VERSION=$(echo "$PKGBUILD" | awk -F= '/^pkgver=/{print $2; exit}' || echo "none")
-        if [[ "$AUR_VERSION" == "${{ steps.check.outputs.latest_version }}" ]]; then
-          echo "same_version=true" >> "$GITHUB_OUTPUT"
-        else
-          echo "same_version=false" >> "$GITHUB_OUTPUT"
-        fi
-      continue-on-error: true
-
-    - name: Determine pkgrel
-      if: steps.check.outputs.update_needed == 'true'
-      id: pkgrel
-      run: |
-        set -euo pipefail
-  
-        if [[ "${{ steps.current_pkgrel.outputs.same_version }}" == "true" ]]; then
-          CURRENT=${{ steps.current_pkgrel.outputs.current_pkgrel }}
-  
-          # Safety: if CURRENT isn't a plain integer, reset to 1
-          if [[ "$CURRENT" =~ ^[0-9]+$ ]]; then
-            NEW_PKGREL=$((CURRENT + 1))
-          else
-            NEW_PKGREL=1
-          fi
-  
-          echo "pkgrel=$NEW_PKGREL" >> "$GITHUB_OUTPUT"
-        else
-          # New upstream version: start at pkgrel=1
-          echo "pkgrel=1" >> "$GITHUB_OUTPUT"
-        fi
-
     - name: Create PKGBUILD
       if: steps.check.outputs.update_needed == 'true'
       run: |
@@ -123,7 +90,7 @@ jobs:
         
         pkgname=ns3-simple
         pkgver=${{ steps.check.outputs.latest_version }}
-        pkgrel=${{ steps.pkgrel.outputs.pkgrel }}
+        pkgrel=1
         pkgdesc='Discrete-event network simulator for Internet systems'
         arch=('x86_64')
         url='https://www.nsnam.org/'
@@ -269,7 +236,8 @@ jobs:
       with:
         pkgname: ns3-simple
         pkgbuild: aur-package/PKGBUILD
+        auto_pkgrel: 'true'
         commit_username: MLM-stuff
         commit_email: gfxoxinzh@mozmail.com
         ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-        commit_message: "ns3-simple: update to ${{ steps.check.outputs.latest_version }}-${{ steps.pkgrel.outputs.pkgrel }}"
+        commit_message: "ns3-simple: update to ${{ steps.check.outputs.latest_version }}"
